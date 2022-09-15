@@ -4,15 +4,8 @@
 
 yum update -y
 
-yum install -y jq ec2-instance-connect nc telnet make unzip gcc libssl-dev zlib1g-dev libreadline-dev postgresql-devel.x86_64
+yum install -y jq ec2-instance-connect mysql nc telnet
 amazon-linux-extras install postgresql14 -y
-
-wget -q -O pg_repack.zip "https://api.pgxn.org/dist/pg_repack/1.4.6/pg_repack-1.4.6.zip"
-unzip pg_repack.zip && rm -f pg_repack.zip
-cd pg_repack-*
-make && make install
-cd ..
-rm -rf pg_repack-*
 
 # install and configure fail2ban
 amazon-linux-extras install epel -y
@@ -28,27 +21,27 @@ systemctl restart fail2ban
 # cloudwatch logging
 yum install -y awslogs
 sed -i "s/us-east-1/${region}/" /etc/awslogs/awscli.conf
-sed -i "s/log_group_name = \/var\/log\/messages/log_group_name = \/aws\/ec2\/pg_repack\/" /etc/awslogs/awslogs.conf
+sed -i "s/log_group_name = \/var\/log\/messages/log_group_name = \/aws\/ec2\/bastion\/${engine}/" /etc/awslogs/awslogs.conf
 sudo cat << EOF >> /etc/awslogs/awslogs.conf
 [/var/log/dmesg]
 file = /var/log/dmesg
 log_stream_name = /var/log/dmesg
-log_group_name = /aws/ec2/pg_repack
+log_group_name = /aws/ec2/bastion/${engine}
 
 [/var/log/secure]
 file = /var/log/secure
 log_stream_name = /var/log/secure
-log_group_name = /aws/ec2/pg_repack
+log_group_name = /aws/ec2/bastion/${engine}
 
 [/var/log/audit/audit.log]
 file = /var/log/audit/audit.log
 log_stream_name = /var/log/audit
-log_group_name = /aws/ec2/pg_repack
+log_group_name = /aws/ec2/bastion/${engine}
 
 [/var/log/cron]
 file = /var/log/cron
 log_stream_name = /var/log/cron
-log_group_name = /aws/ec2/pg_repack
+log_group_name = /aws/ec2/bastion/${engine}
 
 EOF
 

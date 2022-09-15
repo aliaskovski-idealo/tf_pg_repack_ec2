@@ -1,46 +1,30 @@
 locals {
   name = replace(lower("${var.namespace}-${var.stage}-${var.name}"), "_", "-")
 }
-#data "aws_ami" "amazon-linux-2" {
-#  most_recent = true
-#  owners      = ["amazon"]
-#
-#  filter {
-#    name   = "name"
-#    values = ["amzn2-ami-hvm*"]
-#  }
-#}
-
-data "aws_ami" "ubuntu" {
+data "aws_ami" "amazon-linux-2" {
   most_recent = true
+  owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+    values = ["amzn2-ami-hvm*"]
   }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  owners = ["099720109477"] # Canonical
 }
 
 
-resource "aws_iam_role_policy_attachment" "pg_repack_host_AmazonSSMManagedInstanceCore" {
+resource "aws_iam_role_policy_attachment" "bastion_host_AmazonSSMManagedInstanceCore" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  role       = aws_iam_role.pg_repack_ec2.name
+  role       = aws_iam_role.bastion_host.name
 }
 
 resource "aws_iam_role_policy_attachment" "logging_policy" {
-  role       = aws_iam_role.pg_repack_ec2.name
+  role       = aws_iam_role.bastion_host.name
   policy_arn = aws_iam_policy.logging_policy.arn
 }
 
 resource "aws_iam_policy" "logging_policy" {
-  name        = "${local.name}-pg-repack-ec2-logging-policy"
-  description = "pg-repack-ec2 logging policy"
+  name        = "${local.name}-bastion-logging-policy"
+  description = "Bastion host logging policy"
 
   policy = <<EOF
 {
@@ -63,8 +47,8 @@ resource "aws_iam_policy" "logging_policy" {
 EOF
 }
 
-resource "aws_iam_role" "pg_repack_ec2" {
-  name               = "${local.name}-pg-repack-ec2"
+resource "aws_iam_role" "bastion_host" {
+  name               = "${local.name}-bastion_host"
   description        = "trusted entity of the role"
   path               = "/"
   assume_role_policy = <<EOF
@@ -84,26 +68,27 @@ resource "aws_iam_role" "pg_repack_ec2" {
 EOF
 }
 
-resource "aws_iam_instance_profile" "pg_repack_ec2_instance_profile" {
+resource "aws_iam_instance_profile" "bastion_host_instance_profile" {
   name = "${local.name}-instance-profile"
-  role = aws_iam_role.pg_repack_ec2.name
+  role = aws_iam_role.bastion_host.name
 }
 
 // Configure the EC2 instance in a public subnet
-resource "aws_instance" "pg_repack_ec2_public" {
-  ami                         = data.aws_ami.ubuntu.id
+resource "aws_instance" "ec2_public" {
+  ami                         = data.aws_ami.amazon-linux-2.id
   associate_public_ip_address = true
-  iam_instance_profile        = aws_iam_instance_profile.pg_repack_ec2_instance_profile.name
-  instance_type               = "t3.medium"
-  subnet_id                   = var.public_subnet_ids[0]
- # vpc_security_group_ids      = compact(concat([var.sg_rds_connect_id], aws_security_group.allow_ssh_pg_repack.*.id))
-  vpc_security_group_ids      = aws_security_group.allow_ssh_pg_repack.*.id
+  iam_instance_profile        = aws_iam_instance_profile.bastion_host_instance_profile.name
+  instance_type               = "t2.micro"
+  subnet_id                   = var.public_subnet[0]
+  vpc_security_group_ids      = compact(concat([var.sg_rds_connect_id], aws_security_group.allow_ssh_pub.*.id))
+
   tags = {
-    "Name" = "${local.name}-pg_repack"
+    "Name" = "${local.name}-EC2-PUBLIC"
   }
 
-  user_data = templatefile("${path.module}/templates/ubuntu.sh", {
+  user_data = templatefile("${path.module}/templates/init.tpl", {
     region = var.region
+    engine = var.rds_engine
   })
 }
 
@@ -122,7 +107,7 @@ resource "aws_iam_policy" "instance_connect" {
     {
   		"Effect": "Allow",
   		"Action": "ec2-instance-connect:SendSSHPublicKey",
-  		"Resource": "${aws_instance.pg_repack_ec2_public.arn}",
+  		"Resource": "${aws_instance.ec2_public.arn}",
   		"Condition": {
   			"StringEquals": { "ec2:osuser": "ec2-user" }
   		}
@@ -138,10 +123,10 @@ EOF
 }
 
 // SG to allow SSH connections from anywhere
-resource "aws_security_group" "allow_ssh_pg_repack" {
-  name        = "${local.name}-allow_ssh_pg_repack"
-  description = "Allow SSH inbound traffic for pg_repack ec2"
-  vpc_id      = var.vpc_id
+resource "aws_security_group" "allow_ssh_pub" {
+  name        = "${local.name}-allow_ssh"
+  description = "Allow SSH inbound traffic"
+  vpc_id      = var.vpc
 
   # for db authentication using ssh tunnel only, without sessionmanager!
   ingress {
@@ -160,7 +145,7 @@ resource "aws_security_group" "allow_ssh_pg_repack" {
   }
 
   tags = {
-    Name = "${local.name}-allow_ssh_pub_pg_repack"
+    Name = "${local.name}-allow_ssh_pub"
   }
 }
 
@@ -168,11 +153,11 @@ resource "aws_security_group" "allow_ssh_pg_repack" {
 data "template_file" "connect_script" {
   template = file("${path.module}/connect.sh.tpl")
   vars = {
-    ec2_public_ip   = aws_instance.pg_repack_ec2_public.public_ip
-    ec2_instance_id = aws_instance.pg_repack_ec2_public.id
+    ec2_public_ip   = aws_instance.ec2_public.public_ip
+    ec2_instance_id = aws_instance.ec2_public.id
     rds_port        = var.rds_port
     rds_endpoint    = var.rds_endpoint
-    ec2_az          = aws_instance.pg_repack_ec2_public.availability_zone
+    ec2_az          = aws_instance.ec2_public.availability_zone
     aws_region      = var.region
     OPTION          = "$${OPTION}"
     SELF            = "$${SELF}"
